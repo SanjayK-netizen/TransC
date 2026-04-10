@@ -6,6 +6,7 @@
 #include <string.h>
 #include <time.h>
 #include <ctype.h>
+#include <unistd.h>
 
 #define LOG_FILE "audit.log"
 #define MAX_ATTEMPTS 3
@@ -37,6 +38,7 @@ void textFile(FILE *readPtr);
 void updateRecord(FILE *fPtr);
 void newRecord(FILE *fPtr);
 void deleteRecord(FILE *fPtr);
+void changePin(void);
 
 int main(int argc, char *argv[])
 {
@@ -64,7 +66,7 @@ int main(int argc, char *argv[])
     logAction("User logged in");
 
     // enable user to specify action
-    while ((choice = enterChoice()) != 5)
+    while ((choice = enterChoice()) != 6)
     {
         switch (choice)
         {
@@ -76,12 +78,16 @@ int main(int argc, char *argv[])
         case 2:
             updateRecord(cfPtr);
             break;
-        // create record
+        // change PIN
         case 3:
+            changePin();
+            break;
+        // create record
+        case 4:
             newRecord(cfPtr);
             break;
         // delete existing record
-        case 4:
+        case 5:
             deleteRecord(cfPtr);
             break;
         // display if user does not select valid choice
@@ -94,6 +100,105 @@ int main(int argc, char *argv[])
     logAction("User logged out");
     fclose(cfPtr); // fclose closes the file
 } // end main
+
+// change PIN
+void changePin(void)
+{
+    FILE *fPtr = fopen("credit.dat", "rb+");
+    if (!fPtr)
+    {
+        printf("Error opening file.\n");
+        return;
+    }
+
+    fseek(fPtr, 0, SEEK_SET);
+    unsigned int storedHash;
+    fread(&storedHash, sizeof(unsigned int), 1, fPtr);
+
+    char oldPin[5], newPin[5], confirmPin[5];
+    char input[10];
+    int attempts = 0;
+
+    while (attempts < MAX_ATTEMPTS)
+    {
+        printf("Enter current PIN: ");
+        if (fgets(input, sizeof(input), stdin) == NULL)
+        {
+            printf("Input error.\n");
+            fclose(fPtr);
+            return;
+        }
+        input[strcspn(input, "\n")] = 0;
+        if (strlen(input) != 4 || strspn(input, "0123456789") != 4)
+        {
+            printf("Invalid PIN format.\n");
+            attempts++;
+            continue;
+        }
+        strcpy(oldPin, input);
+
+        if (hashPin(oldPin) == storedHash)
+        {
+            break;
+        }
+        attempts++;
+        printf("Incorrect PIN. Attempts remaining: %d\n", MAX_ATTEMPTS - attempts);
+    }
+
+    if (attempts >= MAX_ATTEMPTS)
+    {
+        printf("Too many failed attempts.\n");
+        logAction("Failed PIN change attempts");
+        fclose(fPtr);
+        return;
+    }
+
+    printf("Enter new 4-digit PIN: ");
+    if (fgets(input, sizeof(input), stdin) == NULL)
+    {
+        printf("Input error.\n");
+        fclose(fPtr);
+        return;
+    }
+    input[strcspn(input, "\n")] = 0;
+    if (strlen(input) != 4 || strspn(input, "0123456789") != 4)
+    {
+        printf("Invalid PIN format.\n");
+        fclose(fPtr);
+        return;
+    }
+    strcpy(newPin, input);
+
+    printf("Confirm new PIN: ");
+    if (fgets(input, sizeof(input), stdin) == NULL)
+    {
+        printf("Input error.\n");
+        fclose(fPtr);
+        return;
+    }
+    input[strcspn(input, "\n")] = 0;
+    if (strlen(input) != 4 || strspn(input, "0123456789") != 4)
+    {
+        printf("Invalid PIN format.\n");
+        fclose(fPtr);
+        return;
+    }
+    strcpy(confirmPin, input);
+
+    if (strcmp(newPin, confirmPin) != 0)
+    {
+        printf("PINs do not match.\n");
+        fclose(fPtr);
+        return;
+    }
+
+    unsigned int newHash = hashPin(newPin);
+    fseek(fPtr, 0, SEEK_SET);
+    fwrite(&newHash, sizeof(unsigned int), 1, fPtr);
+    printf("PIN changed successfully.\n");
+    logAction("PIN changed");
+    fclose(fPtr);
+}
 
 // hash function for PIN
 unsigned int hashPin(const char *pin)
@@ -152,19 +257,29 @@ int authenticateUser(void)
     fclose(fPtr);
 
     char pin[5];
+    char input[10];
     int attempts = 0;
 
     while (attempts < MAX_ATTEMPTS)
     {
         printf("Enter 4-digit PIN: ");
-        scanf("%4s", pin);
-
-        if (strlen(pin) != 4 || !isdigit(pin[0]) || !isdigit(pin[1]) ||
-            !isdigit(pin[2]) || !isdigit(pin[3]))
+        if (fgets(input, sizeof(input), stdin) == NULL)
         {
-            printf("Invalid PIN format. Must be 4 digits.\n");
+            printf("Input error.\n");
             continue;
         }
+        // Remove newline
+        input[strcspn(input, "\n")] = 0;
+
+        if (strlen(input) != 4 || strspn(input, "0123456789") != 4)
+        {
+            printf("Invalid PIN format. Must be exactly 4 digits.\n");
+            attempts++;
+            printf("Incorrect PIN. Attempts remaining: %d\n", MAX_ATTEMPTS - attempts);
+            continue;
+        }
+
+        strcpy(pin, input);
 
         if (hashPin(pin) == storedHash)
         {
@@ -173,6 +288,8 @@ int authenticateUser(void)
 
         attempts++;
         printf("Incorrect PIN. Attempts remaining: %d\n", MAX_ATTEMPTS - attempts);
+        // Add delay to prevent brute force
+        sleep(1);
     }
 
     logAction("Failed login attempts exceeded");
@@ -223,10 +340,21 @@ void updateRecord(FILE *fPtr)
     double transaction;   // transaction amount
     // create clientData with no information
     struct clientData client = {0, "", "", 0.0};
+    char input[100];
 
     // obtain number of account to update
     printf("%s", "Enter account to update ( 1 - 100 ): ");
-    scanf("%d", &account);
+    if (fgets(input, sizeof(input), stdin) == NULL)
+    {
+        printf("Input error.\n");
+        return;
+    }
+    input[strcspn(input, "\n")] = 0;
+    if (sscanf(input, "%u", &account) != 1 || account < 1 || account > 100)
+    {
+        printf("Invalid account number.\n");
+        return;
+    }
 
     // move file pointer to correct record in file
     fseek(fPtr, (account - 1) * sizeof(struct clientData), SEEK_SET);
@@ -243,7 +371,17 @@ void updateRecord(FILE *fPtr)
 
         // request transaction amount from user
         printf("%s", "Enter charge ( + ) or payment ( - ): ");
-        scanf("%lf", &transaction);
+        if (fgets(input, sizeof(input), stdin) == NULL)
+        {
+            printf("Input error.\n");
+            return;
+        }
+        input[strcspn(input, "\n")] = 0;
+        if (sscanf(input, "%lf", &transaction) != 1)
+        {
+            printf("Invalid transaction amount.\n");
+            return;
+        }
 
         // check for insufficient funds
         if (transaction < 0 && client.balance + transaction < 0)
@@ -259,7 +397,7 @@ void updateRecord(FILE *fPtr)
 
         // move file pointer to correct record in file
         // move back by 1 record length
-        fseek(fPtr, -sizeof(struct clientData), SEEK_CUR);
+        fseek(fPtr, -(long)sizeof(struct clientData), SEEK_CUR);
         // write updated record over old record in file
         fwrite(&client, sizeof(struct clientData), 1, fPtr);
 
@@ -277,10 +415,21 @@ void deleteRecord(FILE *fPtr)
     struct clientData blankClient = {0, "", "", 0}; // blank client
     unsigned int accountNum;                        // account number
     char confirm;
+    char input[10];
 
     // obtain number of account to delete
     printf("%s", "Enter account number to delete ( 1 - 100 ): ");
-    scanf("%d", &accountNum);
+    if (fgets(input, sizeof(input), stdin) == NULL)
+    {
+        printf("Input error.\n");
+        return;
+    }
+    input[strcspn(input, "\n")] = 0;
+    if (sscanf(input, "%u", &accountNum) != 1 || accountNum < 1 || accountNum > 100)
+    {
+        printf("Invalid account number.\n");
+        return;
+    }
 
     // move file pointer to correct record in file
     fseek(fPtr, (accountNum - 1) * sizeof(struct clientData), SEEK_SET);
@@ -295,7 +444,17 @@ void deleteRecord(FILE *fPtr)
     {
         // confirm deletion
         printf("Confirm deletion of account #%d (y/n): ", accountNum);
-        scanf(" %c", &confirm);
+        if (fgets(input, sizeof(input), stdin) == NULL)
+        {
+            printf("Input error.\n");
+            return;
+        }
+        input[strcspn(input, "\n")] = 0;
+        if (sscanf(input, " %c", &confirm) != 1)
+        {
+            printf("Invalid confirmation.\n");
+            return;
+        }
 
         if (confirm == 'y' || confirm == 'Y')
         {
@@ -323,10 +482,21 @@ void newRecord(FILE *fPtr)
     // create clientData with default information
     struct clientData client = {0, "", "", 0.0};
     unsigned int accountNum; // account number
+    char input[100];
 
     // obtain number of account to create
     printf("%s", "Enter new account number ( 1 - 100 ): ");
-    scanf("%d", &accountNum);
+    if (fgets(input, sizeof(input), stdin) == NULL)
+    {
+        printf("Input error.\n");
+        return;
+    }
+    input[strcspn(input, "\n")] = 0;
+    if (sscanf(input, "%u", &accountNum) != 1 || accountNum < 1 || accountNum > 100)
+    {
+        printf("Invalid account number.\n");
+        return;
+    }
 
     // move file pointer to correct record in file
     fseek(fPtr, (accountNum - 1) * sizeof(struct clientData), SEEK_SET);
@@ -341,15 +511,30 @@ void newRecord(FILE *fPtr)
     { // create record
         // user enters last name, first name and balance
         printf("%s", "Enter lastname, firstname, balance\n? ");
-        scanf("%14s%9s%lf", client.lastName, client.firstName, &client.balance);
-
-        // prevent negative balance
-        if (client.balance < 0)
+        if (fgets(input, sizeof(input), stdin) == NULL)
         {
-            printf("Initial balance cannot be negative. Set to 0.\n");
-            client.balance = 0;
+            printf("Input error.\n");
+            return;
+        }
+        input[strcspn(input, "\n")] = 0;
+        char lastName[15], firstName[10];
+        double balance;
+        if (sscanf(input, "%14s %9s %lf", lastName, firstName, &balance) != 3)
+        {
+            printf("Invalid input format.\n");
+            return;
         }
 
+        // prevent negative balance
+        if (balance < 0)
+        {
+            printf("Initial balance cannot be negative. Set to 0.\n");
+            balance = 0;
+        }
+
+        strcpy(client.lastName, lastName);
+        strcpy(client.firstName, firstName);
+        client.balance = balance;
         client.acctNum = accountNum;
         // move file pointer to correct record in file
         fseek(fPtr, (client.acctNum - 1) * sizeof(struct clientData), SEEK_SET);
@@ -367,15 +552,25 @@ void newRecord(FILE *fPtr)
 unsigned int enterChoice(void)
 {
     unsigned int menuChoice; // variable to store user's choice
+    char input[10];
     // display available options
     printf("%s", "\nEnter your choice\n"
                  "1 - store a formatted text file of accounts called\n"
                  "    \"accounts.txt\" for printing\n"
                  "2 - update an account\n"
-                 "3 - add a new account\n"
-                 "4 - delete an account\n"
-                 "5 - end program\n? ");
+                 "3 - change PIN\n"
+                 "4 - add a new account\n"
+                 "5 - delete an account\n"
+                 "6 - end program\n? ");
 
-    scanf("%u", &menuChoice); // receive choice from user
+    if (fgets(input, sizeof(input), stdin) == NULL)
+    {
+        return 6; // default to exit on error
+    }
+    input[strcspn(input, "\n")] = 0;
+    if (sscanf(input, "%u", &menuChoice) != 1)
+    {
+        return 0; // invalid choice
+    }
     return menuChoice;
 } // end function enterChoice
