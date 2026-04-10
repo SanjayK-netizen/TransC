@@ -1,1 +1,0 @@
-Acct  Last Name       First Name    Balance Currency
